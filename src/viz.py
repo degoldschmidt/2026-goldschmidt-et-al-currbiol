@@ -4,6 +4,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import scipy.stats as stats
 
+from src.per_trips import fitGMM
+
 etho_label={0:'border',1:'turn', 2: 'run',  3:'feeding', 4:'other'}
 seg_label={0:'border',1:'visit', 2: 'loop',  3:'finding', 4:'leaving',5:'missing'}
 
@@ -307,3 +309,31 @@ def plotGMM(data, bestModel, infoOI, ax, xname, yname, title, alphavals=0.5, num
     ax.set_ylabel(yname)
     ax.set_title(title)
     return ax
+
+# function for comparing distribution of a quantity of interest
+def plot_trip_distribution_fit(df_all, qOI, condnames_all, otherparams, numbins = 100, iflog = False, 
+                               colwidth = 5, rowwidth = 5, alphaval = 0.5, linecols=['c','b']):
+    xname = qOI
+    if iflog == True: xname = "log10(" + xname +")"
+    yname = 'P'
+
+    fig, ax = plt.subplots(1,len(condnames_all), figsize=(len(condnames_all)*colwidth, 1*rowwidth))
+
+    for condIndx, cond in enumerate(condnames_all):
+            rel_df = df_all.loc[df_all.condition == cond]
+            if len(rel_df)<=0: continue
+            
+            qoIvec = rel_df[qOI].values
+            qoIvec = qoIvec[~np.isnan(qoIvec)]
+            data = qoIvec
+            
+            if iflog == True: data = np.log10(data[data>0])
+    
+            M_best, infoOI = fitGMM(data.reshape(-1,1),otherparams['Nmin'],otherparams['Nmax'])
+
+            if len(condnames_all) > 1:
+                currax = plotGMM(data, M_best, infoOI, ax[condIndx], xname, yname, cond, alphaval, numbins, linecolors=linecols)
+            else:
+                currax = plotGMM(data, M_best, infoOI, ax, xname, yname, cond, alphaval, numbins, linecolors=linecols)
+            myAxisTheme(currax)
+    return fig, M_best  
