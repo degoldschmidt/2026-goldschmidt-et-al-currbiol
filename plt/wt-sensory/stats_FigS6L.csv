@@ -1,0 +1,6 @@
+groupA,groupB,test,p-value,star
+"CantonSMH, before","CantonSMH, after",scipy.stats.ranksums,2.2281896416525878e-06,***
+"Or83b, before","Or83b, after",scipy.stats.ranksums,0.000362542971106349,***
+"Tmem63, before","Tmem63, after",scipy.stats.ranksums,3.4018557116171364e-05,***
+"Tmem63b, before","Tmem63b, after",scipy.stats.ranksums,5.932107632480218e-07,***
+"Tmem63b_x_CSMH, before","Tmem63b_x_CSMH, after",scipy.stats.ranksums,6.702103261267214e-08,***
