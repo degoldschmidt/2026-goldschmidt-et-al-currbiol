@@ -6,7 +6,7 @@ Code and analysis scripts for generating figure panels from "Recent experience a
 
 This repository contains Jupyter notebooks and Python scripts for reproducing all figure panels (Figures 1-3, 5-7, and Supplementary Figures, as well as Data S1).
 
-**Note:** Figure 4 code is located in a separate repository.
+**Note:** Figure 4 code is located in a separate repository: https://github.com/yipeiguo/LocomotorAdaptationModel
 
 ## Repository Structure
 
