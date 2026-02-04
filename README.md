@@ -11,15 +11,15 @@ This repository contains Jupyter notebooks and Python scripts for reproducing al
 ## Repository Structure
 
 - **`sourcecode_figX.ipynb`** - Jupyter notebooks for generating figure panels (Figures 1, 2, 3, 5, 6, 7)
-- **`src/`** - Python modules with core analysis functions:
+- **`./src/`** - Python modules with core analysis functions:
   - `helper.py` - Utility functions
   - `makedataframe.py` - Data frame construction and processing
   - `per_fly.py` - Per-fly analysis
   - `per_trips.py` - Per-trip analysis
   - `viz.py` - Visualization utilities
   - `interface.py` - Data interface functions
-- **`plt/`** - Output directory for generated figures and source data
-- **`dat/`** - Processed data directory
+- **`./plt/`** - Output directory for generated figures and source data
+- **`./dat/`** - Processed data directory
 
 ## Requirements
 
@@ -41,13 +41,15 @@ jupyter notebook sourcecode_fig2.ipynb
 
 Notebooks load pre-processed tracking data from feather and YAML files (not included in this repository due to file size).
 
-## Data
+## Datasets requirements
 
 Raw per-frame tracking data and metadata must be provided separately. Expected data format:
 - `.feather` files with per-frame tracking data
 - `.yaml` files with experiment metadata
 
-Update the `rootDir` variable in each notebook to point to your data directory.
+Please download the per-frame datasets used in the paper from [Mendelay Data](http://dx.doi.org/10.17632/5hdvknkps5.1) and save it to the `./dat/` folder (or a separate path if needed).
+
+If you use a customized path for the per-frame datasets, please update the `rootDir` variable in each notebook to point to your data directory.
 
 ## Figures Generated
 
