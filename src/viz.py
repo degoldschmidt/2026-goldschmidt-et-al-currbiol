@@ -337,3 +337,106 @@ def plot_trip_distribution_fit(df_all, qOI, condnames_all, otherparams, numbins 
                 currax = plotGMM(data, M_best, infoOI, ax, xname, yname, cond, alphaval, numbins, linecolors=linecols)
             myAxisTheme(currax)
     return fig, M_best  
+
+# This is a function for automatically getting the names of the parameters of a specified distribution
+def list_parameters(distribution):
+    """List parameters for scipy.stats.distribution.
+    # Arguments
+        distribution: a string or scipy.stats distribution object.
+    # Returns
+        A list of distribution parameter strings.
+    """
+    if isinstance(distribution, str):
+        distribution = getattr(stats, distribution)
+    if distribution.shapes:
+        parameters = [name.strip() for name in distribution.shapes.split(',')]
+    else:
+        parameters = []
+    if distribution.name in stats._discrete_distns._distn_names:
+        parameters += ['loc']
+    elif distribution.name in stats._continuous_distns._distn_names:
+        parameters += ['loc', 'scale']
+    else:
+        sys.exit("Distribution name not found in discrete or continuous lists.")
+    return parameters
+
+# function for plotting distribution of a quantity of interest across all flies 
+# either across conditions or over all conditions
+# In this v2, we allow fitting to arbitrary specified distribution, and specify the fitted distribution over the data
+def getModelDistributionParams(df, qOI, criteria, fitdist, iflog = False, ifcdf = False):
+    """ 
+    Get the distribution of a quantity of interest across all flies
+    # Arguments
+        df: dataframe containing the data
+        qOI: quantity of interest (column name in dataframe)
+        criteria: dictionary of selection criteria for filtering the dataframe
+        fitdist: distribution to fit (string or scipy.stats distribution object)
+        iflog: whether to take log10 of the quantity of interest
+        ifcdf: whether to fit cumulative distribution function
+    # Returns
+        datavec: data vector of the quantity of interest
+        fittedparams: parameters of the fitted distribution
+        best_fit_line: y values of the fitted distribution over a scan of x values
+    """
+    # convert fitdist to a distribution object if relevant
+    if isinstance(fitdist, str): fitdist = getattr(stats, fitdist)
+
+    # extract parameter names of fitted distribution if relevant
+    parameterNames = list_parameters(fitdist)
+    numparams = len(parameterNames)
+
+    # include other relevant selection criteria
+    for key in criteria.keys():
+        minvalue = criteria[key]['min']
+        maxvalue = criteria[key]['max']
+        df = df.loc[(df[key] >= minvalue) & (df[key] <= maxvalue)]
+    
+    qoIvec = df[qOI].values
+    qoIvec = qoIvec[~np.isnan(qoIvec)]
+    if iflog == False: datavec = qoIvec
+    elif iflog == True: datavec = np.log10(np.abs(qoIvec[qoIvec!=0]))
+
+    datavec = datavec[~np.isnan(datavec)]
+    datavec = datavec[~np.isinf(datavec)]
+
+    try:
+        fittedparams = fitdist.fit(datavec)
+        xscan = np.linspace(np.min(datavec),np.max(datavec),100) 
+        if ifcdf == False: best_fit_line = fitdist.pdf(xscan, *fittedparams)
+        else: best_fit_line = fitdist.cdf(xscan, *fittedparams)
+    except:
+        fittedparams = None
+        best_fit_line = None
+
+    return datavec, fittedparams, best_fit_line
+
+def plotModelDistributionParams(ax, datavec, fittedparams, best_fit_line, condcol='b',ifcdf = False, iflog = False, ifpdf = True):
+    """ 
+    Plot the distribution of a quantity of interest across all flies
+    # Arguments
+        ax: matplotlib axis object to plot on
+        datavec: data vector of the quantity of interest
+        fittedparams: parameters of the fitted distribution
+        best_fit_line: y values of the fitted distribution over a scan of x values
+        condcol: color for the condition
+        ifcdf: whether to plot cumulative distribution function
+        iflog: whether to plot log10 of the quantity of interest
+        ifpdf: whether to plot probability density function (True) or probability mass function (False)
+    # Returns
+        ax: matplotlib axis object with the plot
+    """
+    if ifcdf == False: ax.hist(datavec,numbins, density = ifpdf,color = condcol, alpha=0.5)   
+    else: ax.hist(datavec,numbins, density = True, histtype = "step", cumulative = True, color = condcol, alpha=0.4)   
+
+    if fittedparams != None:
+        xscan = np.linspace(np.min(datavec),np.max(datavec),100) 
+        ax.plot(xscan,best_fit_line,linewidth = 1, color = condcol)
+        ymax = np.max(best_fit_line)
+        
+    if iflog == False: qName = qOI
+    else: qName = 'log10(' + qOI + ')'
+    ax.set_xlabel(qName)
+    if ifcdf == False: ax.set_ylabel("P")
+    else: ax.set_ylabel("C")
+
+    return ax

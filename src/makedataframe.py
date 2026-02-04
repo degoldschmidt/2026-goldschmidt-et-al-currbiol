@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 from tqdm.auto import tqdm
 from os.path import isfile, sep
+import os.path as op
 from src.helper import rle, read_yaml, computeTurnAng
 
 # useful definitions
@@ -94,6 +95,67 @@ def getDataPerGroup(rootDir, files):
     with np.errstate(divide='ignore'):
         datDf['cff'] = np.divide(datDf.fed.values, datDf.time.values)
     datDf.cff = datDf.cff.replace(np.nan, 0)
+
+    return datDf, metadata
+
+# get all per-frame data
+def getDataPerGroup_new(rootDir, files):
+    dat_frames = []
+    metadata = {}
+    for i, file in enumerate(tqdm(files)):
+        tmp = pd.read_feather(rootDir + sep + file + '.feather', columns=None)
+        flies = np.unique(tmp.fly.values)
+        flyidlookup = {fly: 'fly{}'.format(str(i + 1).zfill(2)) for i, fly in enumerate(flies)}
+        parts = file.split('_')
+        tmp['place'] = parts[0]
+        tmp['light'] = parts[2]
+        tmp['food'] = parts[4]
+        tmp['starvation'] = parts[5]
+        metadat = read_yaml(rootDir + sep + file + '.yaml')
+        metadata.update(metadat)
+
+        arena_rad_map = {}
+        food_x_map = {}
+        food_y_map = {}
+        food_r_map = {}
+        for fly in flies:
+            px_per_mm = metadat[fly]['px_per_mm']
+            arena_rad_map[fly] = metadat[fly]['arena']['radius'] / px_per_mm
+            try:
+                spot = metadat[fly]['arena']['spots']
+                food_x_map[fly] = spot['x'] / px_per_mm
+                food_y_map[fly] = spot['y'] / px_per_mm
+                food_r_map[fly] = spot['radius'] / px_per_mm
+            except TypeError:  # deal with list format
+                spot = metadat[fly]['arena']['spots'][0]
+                food_x_map[fly] = spot['x'] / px_per_mm
+                food_y_map[fly] = spot['y'] / px_per_mm
+                food_r_map[fly] = spot['radius'] / px_per_mm
+
+        dx = tmp.groupby('fly')['body_x'].diff()
+        dy = tmp.groupby('fly')['body_y'].diff()
+        dx = dx.fillna(tmp['body_x'])
+        dy = dy.fillna(tmp['body_y'])
+        tmp['displacement'] = np.hypot(dx.values, dy.values)
+        tmp['arenaRad'] = tmp.fly.map(arena_rad_map)
+        tmp['food_x'] = tmp.fly.map(food_x_map)
+        tmp['food_y'] = tmp.fly.map(food_y_map)
+        tmp['food_r'] = tmp.fly.map(food_r_map)
+        tmp['distance_patch_0'] = np.hypot((tmp.body_x.values - tmp.food_x.values),
+                                           (tmp.body_y.values - tmp.food_y.values))
+        tmp['flyid'] = tmp.fly.map(flyidlookup)
+
+        dat_frames.append(tmp)
+
+    datDf = pd.concat(dat_frames, ignore_index=True)
+
+    datDf['is_feeding'] = (datDf['ethogram'] == 3).astype(int)
+    datDf['fed'] = datDf.groupby(['condition', 'fly'])['is_feeding'].cumsum()
+    datDf['fed'] = datDf.fed * datDf.dt.values
+    with np.errstate(divide='ignore', invalid='ignore'):
+        datDf['cff'] = np.divide(datDf.fed.values, datDf.time.values)
+    datDf.cff = datDf.cff.replace(np.nan, 0)
+    datDf['isnan'] = np.isnan(datDf.body_x)
 
     return datDf, metadata
 
@@ -559,4 +621,249 @@ def makePerMoveSegmentDF(df,ethoStatsOfInterest):
     # Augment per-segment dataframe with other properties
     # radius of curvature of segments
     perMoveSegDf['effArcRadius'] = perMoveSegDf['seg_length']/perMoveSegDf['absheadturnangle']
+    return perMoveSegDf
+
+def makePerMoveSegmentDFNB(df,ethoStatsOfInterest):
+    """
+    Function to make a dataframe with per-movement-segment statistics,
+    without breaking segments at direction changes. 
+    # Arguments
+    df : pandas.DataFrame
+        Input dataframe with time series data including 'segment' and 'ethogram' columns.
+    ethoStatsOfInterest : list
+        List of ethogram states to consider for movement segments.
+    # Returns
+    pandas.DataFrame
+        Dataframe containing per-movement-segment statistics. 
+    """
+    perMoveSegDf = pd.DataFrame()
+    for genotype in df.genotype.unique():
+        for condition in df.condition.unique():
+            for flyid in df.flyid.unique():
+                flyDf = df.query(f'flyid=="{flyid}" & condition=="{condition}" & genotype=="{genotype}"')
+                if len(flyDf) == 0: continue
+                    
+                segL, segSt, segType = rle(flyDf.segment)
+        
+                prev_visit = 0
+                cumdist_curr = 0
+                cumRunTime_curr = 0                    
+                cumtime_curr = 0
+        
+                moveSegDf_fly = {
+                    'time': [],  
+                    'seg_state': [],  
+                    'etho_state': [],           
+                    'after_which_visit': [],
+                    'dist_since_visit': [], # total distance travelled during runs since last food spot visit
+                    'time_since_visit': [], # time since last food spot visit
+                    'cumRunTime_since_visit': [], # total run time since last food spot visit       
+                    'seg_duration': [],
+                    'seg_length': [], # total distance travelled by fly during this segment
+                    'headturnangle': [], # net heading turn angle during movement segment (body angle at end - body angle at start)
+                    'absheadturnangle': [], # absolute value of the turn angle
+                    'ifCW': [], # whether the turn is in CW direction
+                }
+        
+                for ii, ss in enumerate(segSt):
+                    segtype_curr = segType[ii]
+                    if segtype_curr == 1:
+                        prev_visit = prev_visit + 1
+                    if (segtype_curr == 1) or (segtype_curr == 2) or (segtype_curr == 4):
+                        cumdist_curr = 0
+                        cumRunTime_curr = 0
+                        cumtime_curr = 0 # reset time since leaving food spot
+        
+                    se = min(ss+segL[ii], len(flyDf.body_x.values))
+                    
+                    ethoL, ethoSt, ethoType, ethoDuration = rle(flyDf.ethogram[ss:se], flyDf.dt[ss:se])
+                    moveSegs = np.where(np.isin(ethoType,ethoStatsOfInterest))[0]
+                    etho_StartTime = np.cumsum(np.insert(ethoDuration,0,0))
+                    moveSegs_starttime = etho_StartTime[moveSegs]
+                    moveSegs_ethoType = ethoType[moveSegs]
+                        
+                    if len(moveSegs) > 0: 
+                        for moveIndx in range(len(moveSegs)):
+                            moveSegDf_fly['seg_state'].append(segtype_curr)
+                            moveSegDf_fly['etho_state'].append(moveSegs_ethoType[moveIndx])
+                            moveSegDf_fly['after_which_visit'].append(prev_visit)
+        
+                            movedur = ethoDuration[moveSegs[moveIndx]]
+                            moveSegDf_fly['seg_duration'].append(movedur)
+                            
+                            moveSegDf_fly['cumRunTime_since_visit'].append(cumRunTime_curr)
+                            if segtype_curr != 1: cumRunTime_curr = cumRunTime_curr + movedur
+                           
+                            moveSegDf_fly['time_since_visit'].append(cumtime_curr + moveSegs_starttime[moveIndx])
+                            
+                            # segment length (distance)
+                            startframe = max(ss + ethoSt[moveSegs[moveIndx]],0)
+                            endframe = min(ss + ethoSt[moveSegs[moveIndx]] + ethoL[moveSegs[moveIndx]] + 1, len(flyDf.body_x.values)) # one frame after last frame
+                            xpos_all = flyDf.body_x.values[startframe:endframe]
+                            ypos_all = flyDf.body_y.values[startframe:endframe]
+                            dist_all = np.sqrt((xpos_all[1:]-xpos_all[:-1])**2 + (ypos_all[1:]-ypos_all[:-1])**2)
+                            totdist = np.nansum(dist_all)
+                            moveSegDf_fly['seg_length'].append(totdist)
+                            # store total running distance since last visit
+                            moveSegDf_fly['dist_since_visit'].append(cumdist_curr)                        
+                            if segtype_curr != 1:
+                                cumdist_curr = cumdist_curr + totdist
+
+                            moveSegDf_fly['time'].append(flyDf.time.values[startframe])
+
+                            # starting displacement from center of spot
+                            dispVec_fromcenter = np.array([xpos_all[0]-flyDf.food_x.values[0],ypos_all[0]-flyDf.food_y.values[0]])
+        
+                            # heading angle (vector from body to head of fly):
+                            if endframe - startframe > 1:
+                                headingAngle_all = flyDf.angle.values[startframe:endframe]
+                                headturnangle_all = computeTurnAngBetween2angles(headingAngle_all[0],headingAngle_all[1:])
+                                turnAngleDir_all = np.sign(headturnangle_all)
+                                changedirFrameInds = np.where(turnAngleDir_all[0:-1] != turnAngleDir_all[1:])[0]
+                                numchanges = len(changedirFrameInds)
+                                if numchanges == 0:
+                                    headturnangle_currseg = headturnangle_all[-1]
+                                else:
+                                    # investigate the first direction change
+                                    changeFrameIndx = changedirFrameInds[-1] # frame right before change in direction
+                                    if (np.abs(headturnangle_all[changeFrameIndx]) > np.pi/2) and (np.abs(headturnangle_all[changeFrameIndx+1]) > np.pi/2):
+                                        headturnangle_last = headturnangle_all[-1]
+                                        headturnangle_currseg = -np.sign(headturnangle_last)*2*np.pi + headturnangle_last
+                                    else:
+                                        headturnangle_currseg = headturnangle_all[-1]
+                                moveSegDf_fly['headturnangle'].append(headturnangle_currseg)
+                                moveSegDf_fly['absheadturnangle'].append(np.abs(headturnangle_currseg))
+                                ifCW_currseg = headturnangle_currseg<0
+                                moveSegDf_fly['ifCW'].append(ifCW_currseg)
+                                
+                            else:
+                                moveSegDf_fly['headturnangle'].append(0)
+                                moveSegDf_fly['absheadturnangle'].append(0)
+                                moveSegDf_fly['ifCW'].append(np.nan)
+        
+                    if (segtype_curr == 4) or (segtype_curr == 5) or (segtype_curr == 0):
+                        cumtime_curr = cumtime_curr + etho_StartTime[-1]
+                        
+                moveSegDf_fly = pd.DataFrame(moveSegDf_fly)
+                moveSegDf_fly['genotype'] = genotype
+                moveSegDf_fly = addExpInfo(moveSegDf_fly, flyid, condition, 'na', 'na', 'na')
+                perMoveSegDf = pd.concat([perMoveSegDf, moveSegDf_fly], sort=False)
+
+                # Augment per-segment dataframe with other properties
+                # radius of curvature of segments
+                perMoveSegDf['effArcRadius'] = perMoveSegDf['seg_length']/perMoveSegDf['absheadturnangle']
+                perMoveSegDf['time_min'] = perMoveSegDf.time.values/60
+    return perMoveSegDf
+
+
+def makePerMoveSegementDF(df,ethoStatsOfInterest):
+    perMoveSegDf = pd.DataFrame()
+    for genotype in df.genotype.unique():
+        for condition in df.condition.unique():
+            for flyid in df.flyid.unique():
+                flyDf = df.query(f'flyid=="{flyid}" & condition=="{condition}" & genotype=="{genotype}"')
+                if len(flyDf) == 0: continue
+                    
+                segL, segSt, segType = rle(flyDf.segment)
+        
+                prev_visit = 0
+                cumdist_curr = 0
+                cumRunTime_curr = 0                    
+                cumtime_curr = 0
+        
+                moveSegDf_fly = {
+                    'seg_state': [],  
+                    'etho_state': [],           
+                    'after_which_visit': [],
+                    'dist_since_visit': [], # total distance travelled during runs since last food spot visit
+                    'time_since_visit': [], # time since last food spot visit
+                    'cumRunTime_since_visit': [], # total run time since last food spot visit       
+                    'seg_duration': [],
+                    'seg_length': [], # total distance travelled by fly during this segment
+                    'headturnangle': [], # net heading turn angle during movement segment (body angle at end - body angle at start)
+                    'absheadturnangle': [], # absolute value of the turn angle
+                    'ifCW': [], # whether the turn is in CW direction
+                }
+        
+                for ii, ss in enumerate(segSt):
+                    segtype_curr = segType[ii]
+                    if segtype_curr == 1:
+                        prev_visit = prev_visit + 1
+                    if (segtype_curr == 1) or (segtype_curr == 2) or (segtype_curr == 4):
+                        cumdist_curr = 0
+                        cumRunTime_curr = 0
+                        cumtime_curr = 0 # reset time since leaving food spot
+        
+                    se = min(ss+segL[ii], len(flyDf.body_x.values))
+                    
+                    ethoL, ethoSt, ethoType, ethoDuration = rle(flyDf.ethogram[ss:se], flyDf.dt[ss:se])
+                    moveSegs = np.where(np.isin(ethoType,ethoStatsOfInterest))[0]
+                    etho_StartTime = np.cumsum(np.insert(ethoDuration,0,0))
+                    moveSegs_starttime = etho_StartTime[moveSegs]
+                    moveSegs_ethoType = ethoType[moveSegs]
+                        
+                    if len(moveSegs) > 0: 
+                        for moveIndx in range(len(moveSegs)):
+                            moveSegDf_fly['seg_state'].append(segtype_curr)
+                            moveSegDf_fly['etho_state'].append(moveSegs_ethoType[moveIndx])
+                            moveSegDf_fly['after_which_visit'].append(prev_visit)
+        
+                            movedur = ethoDuration[moveSegs[moveIndx]]
+                            moveSegDf_fly['seg_duration'].append(movedur)
+                            
+                            moveSegDf_fly['cumRunTime_since_visit'].append(cumRunTime_curr)
+                            if segtype_curr != 1: cumRunTime_curr = cumRunTime_curr + movedur
+                           
+                            moveSegDf_fly['time_since_visit'].append(cumtime_curr + moveSegs_starttime[moveIndx])
+                            
+                            # segment length (distance)
+                            startframe = max(ss + ethoSt[moveSegs[moveIndx]],0)
+                            endframe = min(ss + ethoSt[moveSegs[moveIndx]] + ethoL[moveSegs[moveIndx]] + 1, len(flyDf.body_x.values)) # one frame after last frame
+                            xpos_all = flyDf.body_x.values[startframe:endframe]
+                            ypos_all = flyDf.body_y.values[startframe:endframe]
+                            dist_all = np.sqrt((xpos_all[1:]-xpos_all[:-1])**2 + (ypos_all[1:]-ypos_all[:-1])**2)
+                            totdist = np.nansum(dist_all)
+                            moveSegDf_fly['seg_length'].append(totdist)
+                            # store total running distance since last visit
+                            moveSegDf_fly['dist_since_visit'].append(cumdist_curr)                        
+                            if segtype_curr != 1:
+                                cumdist_curr = cumdist_curr + totdist
+                                
+                            # starting displacement from center of spot
+                            dispVec_fromcenter = np.array([xpos_all[0]-flyDf.food_x.values[0],ypos_all[0]-flyDf.food_y.values[0]])
+        
+                            # heading angle (vector from body to head of fly):
+                            if endframe - startframe > 1:
+                                headingAngle_all = flyDf.angle.values[startframe:endframe]
+                                headturnangle_all = computeTurnAngBetween2angles(headingAngle_all[0],headingAngle_all[1:])
+                                turnAngleDir_all = np.sign(headturnangle_all)
+                                changedirFrameInds = np.where(turnAngleDir_all[0:-1] != turnAngleDir_all[1:])[0]
+                                numchanges = len(changedirFrameInds)
+                                if numchanges == 0:
+                                    headturnangle_currseg = headturnangle_all[-1]
+                                else:
+                                    # investigate the first direction change
+                                    changeFrameIndx = changedirFrameInds[-1] # frame right before change in direction
+                                    if (np.abs(headturnangle_all[changeFrameIndx]) > np.pi/2) and (np.abs(headturnangle_all[changeFrameIndx+1]) > np.pi/2):
+                                        headturnangle_last = headturnangle_all[-1]
+                                        headturnangle_currseg = -np.sign(headturnangle_last)*2*np.pi + headturnangle_last
+                                    else:
+                                        headturnangle_currseg = headturnangle_all[-1]
+                                moveSegDf_fly['headturnangle'].append(headturnangle_currseg)
+                                moveSegDf_fly['absheadturnangle'].append(np.abs(headturnangle_currseg))
+                                ifCW_currseg = headturnangle_currseg<0
+                                moveSegDf_fly['ifCW'].append(ifCW_currseg)
+                                
+                            else:
+                                moveSegDf_fly['headturnangle'].append(0)
+                                moveSegDf_fly['absheadturnangle'].append(0)
+                                moveSegDf_fly['ifCW'].append(np.nan)
+        
+                    if (segtype_curr == 4) or (segtype_curr == 5) or (segtype_curr == 0):
+                        cumtime_curr = cumtime_curr + etho_StartTime[-1]
+                        
+                moveSegDf_fly = pd.DataFrame(moveSegDf_fly)
+                moveSegDf_fly['genotype'] = genotype
+                moveSegDf_fly = addExpInfo(moveSegDf_fly, flyid, condition, 'na', 'na', 'na')
+                perMoveSegDf = pd.concat([perMoveSegDf, moveSegDf_fly], sort=False)
     return perMoveSegDf

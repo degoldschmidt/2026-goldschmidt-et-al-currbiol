@@ -1,0 +1,4 @@
+groupA,groupB,test,p-value
+"CantonSMH, before","CantonSMH, after",scipy.stats.ranksums,3.688128897567542e-08
+"Gr43a, before","Gr43a, after",scipy.stats.ranksums,1.928120924930405e-06
+"Gr5a, before","Gr5a, after",scipy.stats.ranksums,0.0020443666604800367
